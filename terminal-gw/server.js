@@ -16,6 +16,29 @@ const LXD_BIN = process.env.LXD_BIN || 'lxc';
 
 const activeSessions = new Map();
 
+const { execFile } = require("child_process");
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function waitForExecReady(instanceName, tries = 60, delayMs = 500) {
+    const execFileP = (args) => new Promise((res, rej) => {
+        execFile(LXD_BIN, args, (err, stdout, stderr) => {
+            if (err) return rej(stderr || err.message);
+            res(stdout);
+        });
+    });
+
+    for (let i = 0; i < tries; i++) {
+        try {
+            await execFileP(["exec", instanceName, "--", "bash", "-lc", "echo READY"]);
+            return true;
+        } catch (e) {
+            await sleep(delayMs);
+        }
+    }
+    return false;
+}
+
 wss.on('connection', (ws, req) => {
     try {
         const url = new URL(req.url, `http://${req.headers.host}`);
@@ -54,7 +77,20 @@ wss.on('connection', (ws, req) => {
             if (oldWs.readyState === WebSocket.OPEN) oldWs.close();
             try { oldPty.kill(); } catch (e) { }
         }
+        // Show ONE clean line (no ANSI)
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send("Please wait until VM gets ready...\r\n");
+        }
 
+        // Wait until LXD exec becomes available (agent ready)
+        const ready = await waitForExecReady(instanceName);
+        if (!ready) {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send("VM is taking too long to get ready. Please try again.\r\n");
+            }
+            ws.close();
+            return;
+        }
         const ptyProcess = pty.spawn(LXD_BIN, ['exec', instanceName, '--', 'bash', '-lc', 'exec bash'], {
             name: 'xterm-color',
             cols: 80,
@@ -62,6 +98,10 @@ wss.on('connection', (ws, req) => {
             cwd: process.env.HOME,
             env: process.env
         });
+
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send("[TTYLabBox] Connected.\r\n");
+        }
 
         activeSessions.set(sessionKey, { ws, pty: ptyProcess });
 
@@ -73,26 +113,31 @@ wss.on('connection', (ws, req) => {
 
         ptyProcess.onExit(({ exitCode }) => {
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(`\r\n\x1b[33m[Gateway] Process exited (code ${exitCode})\x1b[0m\r\n`);
+                ws.send("\r\n[TTYLabBox] Connection closed.\r\n");
                 ws.close();
             }
             activeSessions.delete(sessionKey);
         });
 
         ws.on('message', (message) => {
-            if (typeof message === 'string') {
-                try {
-                    const msg = JSON.parse(message);
-                    if (msg.type === 'resize' && msg.cols && msg.rows) {
-                        try { ptyProcess.resize(msg.cols, msg.rows); } catch (e) { }
-                    } else if (msg.type === 'input' && msg.data) {
-                        ptyProcess.write(msg.data);
-                    }
-                } catch (e) {
-                    ptyProcess.write(message);
+            const text = Buffer.isBuffer(message) ? message.toString('utf8') : String(message);
+
+            try {
+                const msg = JSON.parse(text);
+
+                if (msg.type === 'resize' && msg.cols && msg.rows) {
+                    try { ptyProcess.resize(msg.cols, msg.rows); } catch (e) { }
+                    return;
                 }
-            } else {
-                ptyProcess.write(message.toString());
+
+                if (msg.type === 'input' && typeof msg.data === 'string') {
+                    ptyProcess.write(msg.data);
+                    return;
+                }
+                return;
+
+            } catch (e) {
+                ptyProcess.write(text);
             }
         });
 
@@ -104,7 +149,6 @@ wss.on('connection', (ws, req) => {
         });
 
     } catch (err) {
-        ws.send('\r\n\x1b[31m[Gateway] Internal Server Error.\x1b[0m\r\n');
         ws.close();
     }
 });
