@@ -22,7 +22,22 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
-../terminal-gw/node_modules/
-../terminal-gw/.env
+# env files
 laravel/.env
+terminal-gw/.env
+
+# dependencies
 laravel/vendor/
+laravel/node_modules/
+terminal-gw/node_modules/
+
+# runtime
+laravel/storage/
+laravel/bootstrap/cache/
+
+# sqlite db (do NOT commit)
+laravel/database/*.sqlite
+laravel/database/*.sqlite-journal
+
+# logs
+*.log

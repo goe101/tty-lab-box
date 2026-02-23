@@ -30,7 +30,7 @@ class AttemptController extends Controller
         $nodes = [];
 
         foreach ($lab->nodes as $node) {
-            $instanceName = 'att_' . $attempt->id . '__' . $node->node_name;
+            $instanceName = 'att-' . $attempt->id . '-' . $node->node_name;
 
             $opts = ['image' => $node->image];
             $lxd->createVm($instanceName, $opts);
